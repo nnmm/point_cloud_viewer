@@ -6,6 +6,7 @@ use crate::{LayerData, Point, PointData};
 use cgmath::{Matrix4, Vector3, Vector4};
 use collision::Aabb3;
 use fnv::FnvHashMap;
+use std::sync::mpsc; // should probably use crossbeam
 
 /// size for batch
 pub const NUM_POINTS_PER_BATCH: usize = 500_000;
@@ -125,19 +126,19 @@ where
 
 /// Iterator on point batches
 pub struct BatchIterator<'a> {
-    octree: &'a Octree,
+    octrees: Vec<&'a Octree>,
     point_location: &'a PointQuery,
     batch_size: usize,
 }
 
 impl<'a> BatchIterator<'a> {
     pub fn new(
-        octree: &'a octree::Octree,
+        octrees: Vec<&'a octree::Octree>,
         point_location: &'a PointQuery,
         batch_size: usize,
     ) -> Self {
         BatchIterator {
-            octree,
+            octrees,
             point_location,
             batch_size,
         }
@@ -155,17 +156,33 @@ impl<'a> BatchIterator<'a> {
             .clone()
             .map(|t| t.inverse());
         let mut point_stream = PointStream::new(self.batch_size, local_from_global, &mut func);
-        // nodes iterator: retrieve nodes
-        let node_id_iterator = self.octree.nodes_in_location(self.point_location);
         // operate on nodes
-        for node_id in node_id_iterator {
-            let point_iterator = self.octree.points_in_node(self.point_location, node_id);
-            for point in point_iterator {
-                point_stream.push_point_and_callback(point)?;
+        let (tx, rx) = mpsc::sync_channel(1000000);
+        let node_id_vec: Vec<(octree::node::NodeId, &Octree)> = self
+            .octrees
+            .iter()
+            .flat_map(|&octree| {
+                octree
+                    .nodes_in_location(self.point_location)
+                    .zip(std::iter::repeat(octree))
+            })
+            .collect();
+        let pl = &self.point_location;
+        crossbeam::scope(|s| {
+            for (node_id, octree) in node_id_vec {
+                let tx_thread = tx.clone();
+                s.spawn(move |_| {
+                    let point_iterator = octree.points_in_node(pl, node_id);
+                    for point in point_iterator {
+                        tx_thread.send(point).unwrap();
+                    }
+                });
             }
-        }
-        // TODO(catevita): return point data through mpsc channel
-        // TODO(catevita): apply mut function to received data
+
+            rx.iter()
+                .try_for_each(|point| point_stream.push_point_and_callback(point));
+        })
+        .expect("Point iterator thread panicked");
 
         Ok(())
     }

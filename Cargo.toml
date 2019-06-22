@@ -35,6 +35,7 @@ s2 = "0.0.8"
 scoped-pool = "^0.1"
 structopt = "0.2"
 walkdir = "^0.1.5"
+crossbeam = "0.7.1"
 
 [dependencies.point_viewer_proto_rust]
 path = "point_viewer_proto_rust"
