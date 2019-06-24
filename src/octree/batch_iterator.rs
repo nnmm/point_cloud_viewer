@@ -155,9 +155,8 @@ impl<'a> BatchIterator<'a> {
             .global_from_local
             .clone()
             .map(|t| t.inverse());
-        let mut point_stream = PointStream::new(self.batch_size, local_from_global, &mut func);
         // operate on nodes
-        let (tx, rx) = mpsc::sync_channel(1000000);
+        let (tx, rx) = mpsc::sync_channel(100);
         let node_id_vec: Vec<(octree::node::NodeId, &Octree)> = self
             .octrees
             .iter()
@@ -168,22 +167,26 @@ impl<'a> BatchIterator<'a> {
             })
             .collect();
         let pl = &self.point_location;
+        let bs = self.batch_size;
         crossbeam::scope(|s| {
             for (node_id, octree) in node_id_vec {
                 let tx_thread = tx.clone();
+                let local_from_global_thread = local_from_global.clone();
                 s.spawn(move |_| {
                     let point_iterator = octree.points_in_node(pl, node_id);
+                    let mut send_func = |batch| { 
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        Ok(tx_thread.send(batch).expect("Send error")) };
+                    let mut point_stream = PointStream::new(bs, local_from_global_thread, &mut send_func);
+
                     for point in point_iterator {
-                        tx_thread.send(point).unwrap();
+                        point_stream.push_point_and_callback(point).unwrap();
                     }
+                    point_stream.callback().unwrap();
                 });
             }
-
-            rx.iter()
-                .try_for_each(|point| point_stream.push_point_and_callback(point));
-        })
-        .expect("Point iterator thread panicked");
-
-        Ok(())
+            rx.iter().try_for_each(func)
+        }).map_err(|e| {println!("Map_err"); e})
+        .expect("Point iterator thread panicked")
     }
 }
