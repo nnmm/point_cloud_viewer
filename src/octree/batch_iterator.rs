@@ -179,6 +179,11 @@ impl<'a> BatchIterator<'a> {
                         println!("Sending");
                         let send_result = tx_thread.send(batch);
                         // TODO: Map send_result to our own error type :(
+                        if send_result.is_err() {
+                            Err(ErrorKind::Grpc.into())
+                        } else {
+                            Ok(())
+                        }
                     };
                     let mut point_stream = PointStream::new(bs, local_from_global_thread, &mut send_func);
 
